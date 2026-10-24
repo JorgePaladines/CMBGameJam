@@ -8,10 +8,15 @@
 #include "EnhancedInputComponent.h"
 #include "InputActionValue.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/Controller.h"
 #include "CMBGameJam.h"
 
 ACMBGameJamCharacter::ACMBGameJamCharacter()
 {
+	// Only ticks while a command list is running
+	PrimaryActorTick.bCanEverTick = true;
+	PrimaryActorTick.bStartWithTickEnabled = false;
+
 	// Set size for collision capsule
 	GetCapsuleComponent()->InitCapsuleSize(55.f, 96.0f);
 	
@@ -42,6 +47,23 @@ ACMBGameJamCharacter::ACMBGameJamCharacter()
 	// Configure character movement
 	GetCharacterMovement()->BrakingDecelerationFalling = 1500.0f;
 	GetCharacterMovement()->AirControl = 0.5f;
+
+	// Default steps so it works before you touch the Blueprint. Tune them there afterwards.
+	auto MakeStep = [](const FVector& Move, float YawRate)
+	{
+		FDroneStep Step;
+		Step.LocalMove = Move;
+		Step.YawRate = YawRate;
+		return Step;
+	};
+
+	// Jump has no row: it is a one-off impulse handled in Activate
+	Steps.Add(EDroneCommand::Forward,   MakeStep(FVector( 1.f,  0.f, 0.f),   0.f));
+	Steps.Add(EDroneCommand::Back,      MakeStep(FVector(-1.f,  0.f, 0.f),   0.f));
+	Steps.Add(EDroneCommand::Left,      MakeStep(FVector( 0.f, -1.f, 0.f),   0.f));
+	Steps.Add(EDroneCommand::Right,     MakeStep(FVector( 0.f,  1.f, 0.f),   0.f));
+	Steps.Add(EDroneCommand::TurnRight, MakeStep(FVector::ZeroVector,       60.f));
+	Steps.Add(EDroneCommand::TurnLeft,  MakeStep(FVector::ZeroVector,      -60.f));
 }
 
 void ACMBGameJamCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -50,15 +72,8 @@ void ACMBGameJamCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInpu
 	if (UEnhancedInputComponent* EnhancedInputComponent = Cast<UEnhancedInputComponent>(PlayerInputComponent))
 	{
 		// Jumping
-		EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Started, this, &ACMBGameJamCharacter::DoJumpStart);
-		EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Completed, this, &ACMBGameJamCharacter::DoJumpEnd);
-
-		// Moving
-		EnhancedInputComponent->BindAction(MoveAction, ETriggerEvent::Triggered, this, &ACMBGameJamCharacter::MoveInput);
-
-		// Looking/Aiming
-		EnhancedInputComponent->BindAction(LookAction, ETriggerEvent::Triggered, this, &ACMBGameJamCharacter::LookInput);
-		EnhancedInputComponent->BindAction(MouseLookAction, ETriggerEvent::Triggered, this, &ACMBGameJamCharacter::LookInput);
+		// EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Started, this, &ACMBGameJamCharacter::DoJumpStart);
+		// EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Completed, this, &ACMBGameJamCharacter::DoJumpEnd);
 	}
 	else
 	{
@@ -117,4 +132,162 @@ void ACMBGameJamCharacter::DoJumpEnd()
 {
 	// pass StopJumping to the character
 	StopJumping();
+}
+
+void ACMBGameJamCharacter::SubmitCommands(const TArray<EDroneCommand>& Commands)
+{
+	if (Commands.IsEmpty() || !GetWorld())
+	{
+		return;
+	}
+
+	// Every command starts CommandDelay after the previous one, counting all lists sent before it
+	const double Now = GetWorld()->GetTimeSeconds();
+	const double Delay = FMath::Max(0.f, CommandDelay);
+	double ScheduledAt = FMath::Max(Now, LastScheduledTime);
+
+	for (const EDroneCommand Command : Commands)
+	{
+		ScheduledAt += Delay;
+		Pending.Add(FPendingCommand{ Command, ScheduledAt });
+	}
+	LastScheduledTime = ScheduledAt;
+
+	// With no delay everything is already due
+	ProcessPending(Now);
+	UpdateTickState();
+}
+
+void ACMBGameJamCharacter::RequestStop()
+{
+	if (!GetWorld())
+	{
+		return;
+	}
+
+	const double Delay = FMath::Max(0.f, CommandDelay);
+	if (Delay <= 0.0)
+	{
+		StopDrone();
+		return;
+	}
+
+	// Stop doesn't line up behind pending commands: it lands after the delay and wipes them
+	const double At = GetWorld()->GetTimeSeconds() + Delay;
+	StopAt = StopAt < 0.0 ? At : FMath::Min(StopAt, At);
+	UpdateTickState();
+}
+
+void ACMBGameJamCharacter::StopDrone()
+{
+	Pending.Reset();
+	Active.Reset();
+	LastScheduledTime = 0.0;
+	StopAt = -1.0;
+
+	StopJumping();
+	JumpReleaseAt = -1.0;
+
+	UpdateTickState();
+}
+
+void ACMBGameJamCharacter::ProcessPending(double Now)
+{
+	while (Pending.Num() > 0 && Pending[0].ExecuteAt <= Now)
+	{
+		const EDroneCommand Command = Pending[0].Command;
+		Pending.RemoveAt(0);
+		Activate(Command, Now);
+	}
+}
+
+void ACMBGameJamCharacter::Activate(EDroneCommand Command, double Now)
+{
+	if (Command == EDroneCommand::Jump)
+	{
+		Jump();
+		JumpReleaseAt = Now + 0.1;	// released a moment later so it doesn't re-jump on landing
+		return;
+	}
+
+	const FDroneStep* Step = Steps.Find(Command);
+	if (!Step)
+	{
+		return;
+	}
+
+	// The new command replaces any active one on the same axis (Forward replaces Backward, and so on)
+	Active.RemoveAll([Step](const FActiveAction& Other)
+	{
+		const FDroneStep& O = Other.Step;
+		return (!FMath::IsNearlyZero(Step->LocalMove.X) && !FMath::IsNearlyZero(O.LocalMove.X))
+			|| (!FMath::IsNearlyZero(Step->LocalMove.Y) && !FMath::IsNearlyZero(O.LocalMove.Y))
+			|| (!FMath::IsNearlyZero(Step->YawRate) && !FMath::IsNearlyZero(O.YawRate));
+	});
+
+	Active.Add(FActiveAction{ *Step });
+}
+
+void ACMBGameJamCharacter::UpdateTickState()
+{
+	const bool bBusy = IsExecuting() || JumpReleaseAt >= 0.0;
+	const bool bWasTicking = IsActorTickEnabled();
+
+	SetActorTickEnabled(bBusy);
+
+	if (bWasTicking && !bBusy)
+	{
+		OnFinished.Broadcast();
+	}
+}
+
+void ACMBGameJamCharacter::Tick(float DeltaTime)
+{
+	Super::Tick(DeltaTime);
+
+	if (!GetWorld())
+	{
+		return;
+	}
+
+	const double Now = GetWorld()->GetTimeSeconds();
+
+	if (JumpReleaseAt >= 0.0 && Now >= JumpReleaseAt)
+	{
+		StopJumping();
+		JumpReleaseAt = -1.0;
+	}
+
+	// A stop that has come due cancels everything, including commands that haven't started
+	if (StopAt >= 0.0 && Now >= StopAt)
+	{
+		StopDrone();
+		return;
+	}
+
+	ProcessPending(Now);
+
+	// Combine everything that is active: Forward + Right is a diagonal, a turn adds on top
+	FVector MoveSum = FVector::ZeroVector;
+	float YawRateSum = 0.f;
+	for (const FActiveAction& Action : Active)
+	{
+		MoveSum += FVector(Action.Step.LocalMove.X, Action.Step.LocalMove.Y, 0.f);
+		YawRateSum += Action.Step.YawRate;
+	}
+
+	if (!MoveSum.IsNearlyZero())
+	{
+		AddMovementInput(GetActorRotation().RotateVector(MoveSum.GetSafeNormal()), 1.f);
+	}
+
+	// Rotating the controller turns the camera and, with bUseControllerRotationYaw, the body
+	if (Controller && !FMath::IsNearlyZero(YawRateSum))
+	{
+		FRotator NewRotation = Controller->GetControlRotation();
+		NewRotation.Yaw += YawRateSum * DeltaTime;
+		Controller->SetControlRotation(NewRotation);
+	}
+
+	UpdateTickState();
 }

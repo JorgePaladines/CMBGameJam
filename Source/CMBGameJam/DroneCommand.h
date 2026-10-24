@@ -1,3 +1,5 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
 #pragma once
 
 #include "CoreMinimal.h"
@@ -17,21 +19,23 @@ enum class EDroneCommand : uint8
 	TurnLeft	UMETA(DisplayName = "Turn Left"),
 };
 
-/** What one command does. Edit these on BP_DronePlayer. */
+/**
+ * What a command does once it starts. Commands stack: Forward then Right moves diagonally.
+ * A command replaces any active one that drives the same axis (Forward replaces Backward, TurnLeft replaces TurnRight).
+ * Nothing else ends it: a movement or turn keeps going until its counterpart or Stop.
+ * Jump is not listed here, it is a one-off impulse.
+ * Edit these on BP_DronePlayer.
+ */
 USTRUCT(BlueprintType)
 struct FDroneStep
 {
 	GENERATED_BODY()
 
-	/** Horizontal movement relative to the character's current facing (cm). Z is ignored. */
+	/** Direction to move, relative to where the character faces. Only the direction counts (Z ignored); speed comes from Max Walk Speed. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	FVector LocalMove = FVector::ZeroVector;
 
-	/** Yaw change in degrees (positive = right) */
+	/** Turn speed in degrees per second (positive = right) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	float YawDelta = 0.f;
-
-	/** Jump, then wait until landing */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	bool bJump = false;
+	float YawRate = 0.f;
 };
