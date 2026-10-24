@@ -19,6 +19,12 @@ DECLARE_LOG_CATEGORY_EXTERN(LogTemplateCharacter, Log, All);
 /** Fired when the last queued command finishes */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnDroneFinished);
 
+/** Fired when DifficultyScale changes. For UI. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnDifficultyChanged, float, NewScale);
+
+/** Fired when a technical difficulty hit a command: Actual is None if it was skipped, or another command if it was swapped */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCommandGlitch, EDroneCommand, Intended, EDroneCommand, Actual);
+
 /**
  *  A basic first person character
  */
@@ -67,14 +73,14 @@ public:
 	ACMBGameJamCharacter();
 
 	/**
-	 * Adds the commands to the end of the pipeline. Each one starts CommandDelay seconds after the previous one,
+	 * Adds the commands to the end of the pipeline. Each one starts GetEffectiveDelay() seconds after the previous one,
 	 * counting every list sent before it, and keeps running (stacking with the others) until Stop or its counterpart.
 	 */
 	UFUNCTION(BlueprintCallable, Category="Drone")
 	void SubmitCommands(const TArray<EDroneCommand>& Commands);
 
 	/**
-	 * Asks the drone to stop. Takes effect CommandDelay seconds from now, then cancels everything running
+	 * Asks the drone to stop. Takes effect GetEffectiveDelay() seconds from now, then cancels everything running
 	 * and everything still waiting. It does not queue behind pending commands.
 	 */
 	UFUNCTION(BlueprintCallable, Category="Drone")
@@ -89,8 +95,8 @@ public:
 	bool IsExecuting() const { return !Pending.IsEmpty() || !Active.IsEmpty() || StopAt >= 0.0; }
 
 	/**
-	 * Seconds between one command and the next, and before a Stop takes effect.
-	 * Change it at any time (also from Blueprint); it applies to commands sent afterwards.
+	 * Base seconds between one command and the next, and before a Stop takes effect.
+	 * DifficultyScale adds its own delay on top. Applies to commands sent afterwards.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Drone", meta = (ClampMin = "0.0", Units = "s"))
 	float CommandDelay = 0.f;
@@ -98,6 +104,37 @@ public:
 	/** Fired when the drone has nothing left to do */
 	UPROPERTY(BlueprintAssignable, Category="Drone")
 	FOnDroneFinished OnFinished;
+
+	/** Technical difficulties, 0 to 1 (a percentage). Change it with SetDifficultyScale; read it here or with GetDifficultyScale. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Drone|Difficulty", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float DifficultyScale = 0.f;
+
+	/** Sets DifficultyScale (clamped to 0..1) and notifies listeners. Callable from any Blueprint. */
+	UFUNCTION(BlueprintCallable, Category="Drone|Difficulty")
+	void SetDifficultyScale(float NewScale);
+
+	UFUNCTION(BlueprintPure, Category="Drone|Difficulty")
+	float GetDifficultyScale() const { return DifficultyScale; }
+
+	/** The delay actually used between commands right now: CommandDelay plus the difficulty delay */
+	UFUNCTION(BlueprintPure, Category="Drone|Difficulty")
+	float GetEffectiveDelay() const;
+
+	/** Chance a command is skipped, 0..1, at the current scale */
+	UFUNCTION(BlueprintPure, Category="Drone|Difficulty")
+	float GetSkipChance() const { return DifficultyScale * MaxSkipChance; }
+
+	/** Chance a command is swapped for a random one, 0..1, at the current scale */
+	UFUNCTION(BlueprintPure, Category="Drone|Difficulty")
+	float GetRandomizeChance() const { return DifficultyScale * MaxRandomizeChance; }
+
+	/** Fired when DifficultyScale changes */
+	UPROPERTY(BlueprintAssignable, Category="Drone|Difficulty")
+	FOnDifficultyChanged OnDifficultyChanged;
+
+	/** Fired when a command is skipped or swapped, so the UI can react */
+	UPROPERTY(BlueprintAssignable, Category="Drone|Difficulty")
+	FOnCommandGlitch OnCommandGlitch;
 
 protected:
 
@@ -113,6 +150,21 @@ protected:
 	/** How fast the drone turns while a turn command is active, in degrees per second */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Drone", meta = (ClampMin = "0.0", Units = "deg/s"))
 	float TurnSpeed = 60.f;
+
+	/** Extra seconds of delay at DifficultyScale 1 (scales linearly from 0) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Drone|Difficulty", meta = (ClampMin = "0.0", Units = "s"))
+	float MaxDifficultyDelay = 1.f;
+
+	/** Chance a command is skipped at DifficultyScale 1 (scales linearly from 0) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Drone|Difficulty", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float MaxSkipChance = 0.8f;
+
+	/** Chance a command is swapped for a random one at DifficultyScale 1 (scales linearly from 0) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Drone|Difficulty", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float MaxRandomizeChance = 0.5f;
+
+	/** Rolls the technical difficulties for one command: returns it unchanged, another command, or None if skipped */
+	EDroneCommand ApplyGlitch(EDroneCommand Intended) const;
 
 	/** Starts every pending command that is due */
 	void ProcessPending(double Now);

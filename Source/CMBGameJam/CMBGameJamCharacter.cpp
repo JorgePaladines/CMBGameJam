@@ -141,9 +141,9 @@ void ACMBGameJamCharacter::SubmitCommands(const TArray<EDroneCommand>& Commands)
 		return;
 	}
 
-	// Every command starts CommandDelay after the previous one, counting all lists sent before it
+	// Every command starts the effective delay after the previous one, counting all lists sent before it
 	const double Now = GetWorld()->GetTimeSeconds();
-	const double Delay = FMath::Max(0.f, CommandDelay);
+	const double Delay = GetEffectiveDelay();
 	double ScheduledAt = FMath::Max(Now, LastScheduledTime);
 
 	for (const EDroneCommand Command : Commands)
@@ -165,7 +165,7 @@ void ACMBGameJamCharacter::RequestStop()
 		return;
 	}
 
-	const double Delay = FMath::Max(0.f, CommandDelay);
+	const double Delay = GetEffectiveDelay();
 	if (Delay <= 0.0)
 	{
 		StopDrone();
@@ -191,13 +191,72 @@ void ACMBGameJamCharacter::StopDrone()
 	UpdateTickState();
 }
 
+void ACMBGameJamCharacter::SetDifficultyScale(float NewScale)
+{
+	const float Clamped = FMath::Clamp(NewScale, 0.f, 1.f);
+	if (FMath::IsNearlyEqual(Clamped, DifficultyScale))
+	{
+		return;
+	}
+
+	DifficultyScale = Clamped;
+	OnDifficultyChanged.Broadcast(DifficultyScale);
+}
+
+float ACMBGameJamCharacter::GetEffectiveDelay() const
+{
+	return FMath::Max(0.f, CommandDelay) + FMath::Max(0.f, MaxDifficultyDelay) * DifficultyScale;
+}
+
+EDroneCommand ACMBGameJamCharacter::ApplyGlitch(EDroneCommand Intended) const
+{
+	if (DifficultyScale <= 0.f)
+	{
+		return Intended;
+	}
+
+	// Skipped: the command never happens
+	if (FMath::FRand() < GetSkipChance())
+	{
+		return EDroneCommand::None;
+	}
+
+	// Swapped: any command the drone knows (the Steps rows plus Jump) other than the intended one
+	if (FMath::FRand() < GetRandomizeChance())
+	{
+		TArray<EDroneCommand> Options;
+		Steps.GetKeys(Options);
+		Options.AddUnique(EDroneCommand::Jump);
+		Options.Remove(EDroneCommand::None);
+		Options.Remove(Intended);
+
+		if (Options.Num() > 0)
+		{
+			return Options[FMath::RandRange(0, Options.Num() - 1)];
+		}
+	}
+
+	return Intended;
+}
+
 void ACMBGameJamCharacter::ProcessPending(double Now)
 {
 	while (Pending.Num() > 0 && Pending[0].ExecuteAt <= Now)
 	{
-		const EDroneCommand Command = Pending[0].Command;
+		const EDroneCommand Intended = Pending[0].Command;
 		Pending.RemoveAt(0);
-		Activate(Command, Now);
+
+		// The roll happens when the command is about to start, using the scale at that moment
+		const EDroneCommand Actual = ApplyGlitch(Intended);
+		if (Actual != Intended)
+		{
+			OnCommandGlitch.Broadcast(Intended, Actual);
+		}
+
+		if (Actual != EDroneCommand::None)
+		{
+			Activate(Actual, Now);
+		}
 	}
 }
 
