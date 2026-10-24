@@ -106,9 +106,13 @@ protected:
 	UPROPERTY(EditAnywhere, Category ="Input")
 	UInputAction* JumpAction;
 
-	/** Command -> direction and turn rate. Tune them on BP_DronePlayer. */
+	/** Command -> move direction and turn direction. Tune them on BP_DronePlayer. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Drone")
 	TMap<EDroneCommand, FDroneStep> Steps;
+
+	/** How fast the drone turns while a turn command is active, in degrees per second */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Drone", meta = (ClampMin = "0.0", Units = "deg/s"))
+	float TurnSpeed = 60.f;
 
 	/** Starts every pending command that is due */
 	void ProcessPending(double Now);

@@ -22,7 +22,8 @@ enum class EDroneCommand : uint8
 /**
  * What a command does once it starts. Commands stack: Forward then Right moves diagonally.
  * A command replaces any active one that drives the same axis (Forward replaces Backward, TurnLeft replaces TurnRight).
- * Nothing else ends it: a movement or turn keeps going until its counterpart or Stop.
+ * A turn keeps going until its counterpart, Stop, or the next movement command (which cancels it).
+ * A movement keeps going until its counterpart or Stop, and turns stack on top of it.
  * Jump is not listed here, it is a one-off impulse.
  * Edit these on BP_DronePlayer.
  */
@@ -35,7 +36,7 @@ struct FDroneStep
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	FVector LocalMove = FVector::ZeroVector;
 
-	/** Turn speed in degrees per second (positive = right) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	float YawRate = 0.f;
+	/** Which way to turn: 1 = right, -1 = left, 0 = no turn. How fast is the character's Turn Speed. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "-1.0", ClampMax = "1.0"))
+	float Turn = 0.f;
 };
