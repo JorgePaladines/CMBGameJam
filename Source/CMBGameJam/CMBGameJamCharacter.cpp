@@ -49,21 +49,21 @@ ACMBGameJamCharacter::ACMBGameJamCharacter()
 	GetCharacterMovement()->AirControl = 0.5f;
 
 	// Default steps so it works before you touch the Blueprint. Tune them there afterwards.
-	auto MakeStep = [](const FVector& Move, float YawRate)
+	auto MakeStep = [](const FVector& Move, float Turn)
 	{
 		FDroneStep Step;
 		Step.LocalMove = Move;
-		Step.YawRate = YawRate;
+		Step.Turn = Turn;
 		return Step;
 	};
 
 	// Jump has no row: it is a one-off impulse handled in Activate
-	Steps.Add(EDroneCommand::Forward,   MakeStep(FVector( 1.f,  0.f, 0.f),   0.f));
-	Steps.Add(EDroneCommand::Back,      MakeStep(FVector(-1.f,  0.f, 0.f),   0.f));
-	Steps.Add(EDroneCommand::Left,      MakeStep(FVector( 0.f, -1.f, 0.f),   0.f));
-	Steps.Add(EDroneCommand::Right,     MakeStep(FVector( 0.f,  1.f, 0.f),   0.f));
-	Steps.Add(EDroneCommand::TurnRight, MakeStep(FVector::ZeroVector,       60.f));
-	Steps.Add(EDroneCommand::TurnLeft,  MakeStep(FVector::ZeroVector,      -60.f));
+	Steps.Add(EDroneCommand::Forward,   MakeStep(FVector( 1.f,  0.f, 0.f),  0.f));
+	Steps.Add(EDroneCommand::Back,      MakeStep(FVector(-1.f,  0.f, 0.f),  0.f));
+	Steps.Add(EDroneCommand::Left,      MakeStep(FVector( 0.f, -1.f, 0.f),  0.f));
+	Steps.Add(EDroneCommand::Right,     MakeStep(FVector( 0.f,  1.f, 0.f),  0.f));
+	Steps.Add(EDroneCommand::TurnRight, MakeStep(FVector::ZeroVector,       1.f));
+	Steps.Add(EDroneCommand::TurnLeft,  MakeStep(FVector::ZeroVector,      -1.f));
 }
 
 void ACMBGameJamCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -216,13 +216,38 @@ void ACMBGameJamCharacter::Activate(EDroneCommand Command, double Now)
 		return;
 	}
 
+	// A movement command cancels any turn in progress, so going from turning to just moving takes one input.
+	// A turn command doesn't cancel movement, so the two can still stack in that order.
+	const bool bIsMovement = !FMath::IsNearlyZero(Step->LocalMove.X) || !FMath::IsNearlyZero(Step->LocalMove.Y);
+	if (bIsMovement)
+	{
+		for (int32 Index = Active.Num() - 1; Index >= 0; --Index)
+		{
+			FDroneStep& Other = Active[Index].Step;
+			if (FMath::IsNearlyZero(Other.Turn))
+			{
+				continue;
+			}
+
+			if (Other.LocalMove.IsNearlyZero())
+			{
+				Active.RemoveAt(Index);
+			}
+			else
+			{
+				// A movement row that also turns (a curve) keeps moving, it just stops turning
+				Other.Turn = 0.f;
+			}
+		}
+	}
+
 	// The new command replaces any active one on the same axis (Forward replaces Backward, and so on)
 	Active.RemoveAll([Step](const FActiveAction& Other)
 	{
 		const FDroneStep& O = Other.Step;
 		return (!FMath::IsNearlyZero(Step->LocalMove.X) && !FMath::IsNearlyZero(O.LocalMove.X))
 			|| (!FMath::IsNearlyZero(Step->LocalMove.Y) && !FMath::IsNearlyZero(O.LocalMove.Y))
-			|| (!FMath::IsNearlyZero(Step->YawRate) && !FMath::IsNearlyZero(O.YawRate));
+			|| (!FMath::IsNearlyZero(Step->Turn) && !FMath::IsNearlyZero(O.Turn));
 	});
 
 	Active.Add(FActiveAction{ *Step });
@@ -269,24 +294,24 @@ void ACMBGameJamCharacter::Tick(float DeltaTime)
 
 	// Combine everything that is active: Forward + Right is a diagonal, a turn adds on top
 	FVector MoveSum = FVector::ZeroVector;
-	float YawRateSum = 0.f;
+	float TurnSum = 0.f;
 	for (const FActiveAction& Action : Active)
 	{
 		MoveSum += FVector(Action.Step.LocalMove.X, Action.Step.LocalMove.Y, 0.f);
-		YawRateSum += Action.Step.YawRate;
+		TurnSum += Action.Step.Turn;
 	}
 
+	// Same entry points the template uses for player input: DoMove(Right, Forward) and DoAim(Yaw, Pitch)
 	if (!MoveSum.IsNearlyZero())
 	{
-		AddMovementInput(GetActorRotation().RotateVector(MoveSum.GetSafeNormal()), 1.f);
+		const FVector Direction = MoveSum.GetSafeNormal();
+		DoMove(Direction.Y, Direction.X);
 	}
 
-	// Rotating the controller turns the camera and, with bUseControllerRotationYaw, the body
-	if (Controller && !FMath::IsNearlyZero(YawRateSum))
+	// DoAim adds an amount per call, so scale by the frame time to get degrees per second
+	if (!FMath::IsNearlyZero(TurnSum))
 	{
-		FRotator NewRotation = Controller->GetControlRotation();
-		NewRotation.Yaw += YawRateSum * DeltaTime;
-		Controller->SetControlRotation(NewRotation);
+		DoAim(FMath::Clamp(TurnSum, -1.f, 1.f) * TurnSpeed * DeltaTime, 0.f);
 	}
 
 	UpdateTickState();
