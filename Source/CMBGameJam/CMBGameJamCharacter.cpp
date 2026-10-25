@@ -3,7 +3,10 @@
 #include "CMBGameJamCharacter.h"
 #include "Animation/AnimInstance.h"
 #include "Camera/CameraComponent.h"
+#include "Components/AudioComponent.h"
 #include "Components/CapsuleComponent.h"
+#include "Kismet/GameplayStatics.h"
+#include "Sound/SoundBase.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "EnhancedInputComponent.h"
 #include "InputActionValue.h"
@@ -47,6 +50,15 @@ ACMBGameJamCharacter::ACMBGameJamCharacter()
 	// Configure character movement
 	GetCharacterMovement()->BrakingDecelerationFalling = 1500.0f;
 	GetCharacterMovement()->AirControl = 0.5f;
+
+	// Audio components for the looping sounds. The sounds themselves are picked on the Blueprint.
+	MoveAudio = CreateDefaultSubobject<UAudioComponent>(TEXT("Move Audio"));
+	MoveAudio->SetupAttachment(RootComponent);
+	MoveAudio->bAutoActivate = false;
+
+	TurnAudio = CreateDefaultSubobject<UAudioComponent>(TEXT("Turn Audio"));
+	TurnAudio->SetupAttachment(RootComponent);
+	TurnAudio->bAutoActivate = false;
 
 	// Default steps so it works before you touch the Blueprint. Tune them there afterwards.
 	auto MakeStep = [](const FVector& Move, float Turn)
@@ -227,6 +239,8 @@ EDroneCommand ACMBGameJamCharacter::ApplyGlitch(EDroneCommand Intended) const
 		TArray<EDroneCommand> Options;
 		Steps.GetKeys(Options);
 		Options.AddUnique(EDroneCommand::Jump);
+		Options.AddUnique(EDroneCommand::LookUp);
+		Options.AddUnique(EDroneCommand::LookDown);
 		Options.Remove(EDroneCommand::None);
 		Options.Remove(Intended);
 
@@ -264,8 +278,44 @@ void ACMBGameJamCharacter::Activate(EDroneCommand Command, double Now)
 {
 	if (Command == EDroneCommand::Jump)
 	{
+		// Only play the sound if the jump can actually happen (not while already in the air)
+		if (JumpSound && CanJump())
+		{
+			UGameplayStatics::PlaySoundAtLocation(this, JumpSound, GetActorLocation());
+		}
+
 		Jump();
 		JumpReleaseAt = Now + 0.1;	// released a moment later so it doesn't re-jump on landing
+		return;
+	}
+
+	if (Command == EDroneCommand::LookUp || Command == EDroneCommand::LookDown)
+	{
+		if (PitchLevels.IsEmpty() || !Controller)
+		{
+			return;
+		}
+
+		// First look command: start from whichever level is closest to where the camera is now
+		if (!PitchLevels.IsValidIndex(PitchLevelIndex))
+		{
+			const float CurrentPitch = FRotator::NormalizeAxis(Controller->GetControlRotation().Pitch);
+			float BestDistance = TNumericLimits<float>::Max();
+			for (int32 Index = 0; Index < PitchLevels.Num(); ++Index)
+			{
+				const float Distance = FMath::Abs(PitchLevels[Index] - CurrentPitch);
+				if (Distance < BestDistance)
+				{
+					BestDistance = Distance;
+					PitchLevelIndex = Index;
+				}
+			}
+		}
+
+		// One level per command, stopping at the first and last
+		const int32 Direction = Command == EDroneCommand::LookUp ? 1 : -1;
+		PitchLevelIndex = FMath::Clamp(PitchLevelIndex + Direction, 0, PitchLevels.Num() - 1);
+		bPitching = true;
 		return;
 	}
 
@@ -312,9 +362,59 @@ void ACMBGameJamCharacter::Activate(EDroneCommand Command, double Now)
 	Active.Add(FActiveAction{ *Step });
 }
 
+void ACMBGameJamCharacter::RefreshLoopSounds()
+{
+	// Moving: any active movement command. Turning: any active turn command, or the camera still pitching.
+	bool bMoving = false;
+	bool bTurning = bPitching;
+	for (const FActiveAction& Action : Active)
+	{
+		bMoving |= !FMath::IsNearlyZero(Action.Step.LocalMove.X) || !FMath::IsNearlyZero(Action.Step.LocalMove.Y);
+		bTurning |= !FMath::IsNearlyZero(Action.Step.Turn);
+	}
+
+	auto Update = [this](UAudioComponent* Audio, USoundBase* Sound, bool bWanted, bool& bIsOn)
+	{
+		if (!Audio)
+		{
+			return;
+		}
+
+		if (Audio->Sound != Sound)
+		{
+			Audio->SetSound(Sound);
+
+			if (Sound && !Sound->IsLooping())
+			{
+				UE_LOG(LogCMBGameJam, Warning, TEXT("'%s' uses a loop sound that is not set to loop: %s"), *GetNameSafe(this), *GetNameSafe(Sound));
+			}
+		}
+
+		if (!Sound || bWanted == bIsOn)
+		{
+			return;
+		}
+
+		bIsOn = bWanted;
+		if (bWanted)
+		{
+			if (LoopFadeTime > 0.f) { Audio->FadeIn(LoopFadeTime, 1.f); } else { Audio->Play(); }
+		}
+		else
+		{
+			if (LoopFadeTime > 0.f) { Audio->FadeOut(LoopFadeTime, 0.f); } else { Audio->Stop(); }
+		}
+	};
+
+	Update(MoveAudio, MoveLoopSound, bMoving, bMoveSoundOn);
+	Update(TurnAudio, TurnLoopSound, bTurning, bTurnSoundOn);
+}
+
 void ACMBGameJamCharacter::UpdateTickState()
 {
-	const bool bBusy = IsExecuting() || JumpReleaseAt >= 0.0;
+	RefreshLoopSounds();
+
+	const bool bBusy = IsExecuting() || JumpReleaseAt >= 0.0 || bPitching;
 	const bool bWasTicking = IsActorTickEnabled();
 
 	SetActorTickEnabled(bBusy);
@@ -340,6 +440,23 @@ void ACMBGameJamCharacter::Tick(float DeltaTime)
 	{
 		StopJumping();
 		JumpReleaseAt = -1.0;
+	}
+
+	// Camera pitch glides to the current level. It is set directly rather than through DoAim,
+	// because DoAim adds an amount and we need to land exactly on an angle. Stop doesn't touch it.
+	if (bPitching && Controller && PitchLevels.IsValidIndex(PitchLevelIndex))
+	{
+		FRotator ControlRotation = Controller->GetControlRotation();
+		const float Target = PitchLevels[PitchLevelIndex];
+		const float NewPitch = FMath::FInterpConstantTo(FRotator::NormalizeAxis(ControlRotation.Pitch), Target, DeltaTime, PitchSpeed);
+
+		ControlRotation.Pitch = NewPitch;
+		Controller->SetControlRotation(ControlRotation);
+
+		if (FMath::IsNearlyEqual(NewPitch, Target, 0.01f))
+		{
+			bPitching = false;
+		}
 	}
 
 	// A stop that has come due cancels everything, including commands that haven't started

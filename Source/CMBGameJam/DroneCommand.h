@@ -17,6 +17,8 @@ enum class EDroneCommand : uint8
 	Jump		UMETA(DisplayName = "Jump"),
 	TurnRight	UMETA(DisplayName = "Turn Right"),
 	TurnLeft	UMETA(DisplayName = "Turn Left"),
+	LookUp		UMETA(DisplayName = "Look Up"),
+	LookDown	UMETA(DisplayName = "Look Down"),
 };
 
 /**
@@ -24,7 +26,8 @@ enum class EDroneCommand : uint8
  * A command replaces any active one that drives the same axis (Forward replaces Backward, TurnLeft replaces TurnRight).
  * A turn keeps going until its counterpart, Stop, or the next movement command (which cancels it).
  * A movement keeps going until its counterpart or Stop, and turns stack on top of it.
- * Jump is not listed here, it is a one-off impulse.
+ * Jump, LookUp and LookDown are not listed here: Jump is a one-off impulse, and the look commands step the camera
+ * between the character's Pitch Levels.
  * Edit these on BP_DronePlayer.
  */
 USTRUCT(BlueprintType)

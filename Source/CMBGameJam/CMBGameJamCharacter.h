@@ -11,6 +11,8 @@
 class UInputComponent;
 class USkeletalMeshComponent;
 class UCameraComponent;
+class UAudioComponent;
+class USoundBase;
 class UInputAction;
 struct FInputActionValue;
 
@@ -68,6 +70,16 @@ class ACMBGameJamCharacter : public ACharacter
 
 	/** When to release the jump input after a Jump, or < 0 if none */
 	double JumpReleaseAt = -1.0;
+
+	/** Which of PitchLevels the camera is heading to. INDEX_NONE until the first look command. */
+	int32 PitchLevelIndex = INDEX_NONE;
+
+	/** True while the camera is still moving toward the target pitch */
+	bool bPitching = false;
+
+	/** Whether each loop is currently on, so fades are only started on a change */
+	bool bMoveSoundOn = false;
+	bool bTurnSoundOn = false;
 
 public:
 	ACMBGameJamCharacter();
@@ -151,6 +163,17 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Drone", meta = (ClampMin = "0.0", Units = "deg/s"))
 	float TurnSpeed = 60.f;
 
+	/**
+	 * Pitch angles the camera can look at, lowest to highest. Look Up moves to the next one, Look Down to the previous,
+	 * and both stop at the ends. Positive looks up.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Drone|Look")
+	TArray<float> PitchLevels = { -30.f, 0.f, 30.f };
+
+	/** How fast the camera moves between pitch levels, in degrees per second */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Drone|Look", meta = (ClampMin = "0.0", Units = "deg/s"))
+	float PitchSpeed = 90.f;
+
 	/** Extra seconds of delay at DifficultyScale 1 (scales linearly from 0) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Drone|Difficulty", meta = (ClampMin = "0.0", Units = "s"))
 	float MaxDifficultyDelay = 1.f;
@@ -165,6 +188,32 @@ protected:
 
 	/** Rolls the technical difficulties for one command: returns it unchanged, another command, or None if skipped */
 	EDroneCommand ApplyGlitch(EDroneCommand Intended) const;
+
+	/** Plays while any movement command is active. Needs a sound set to loop (Looping on the Sound Wave, or a looping Sound Cue). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Drone|Audio")
+	TObjectPtr<USoundBase> MoveLoopSound;
+
+	/** Plays while turning or while the camera is looking up/down. Needs a sound set to loop. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Drone|Audio")
+	TObjectPtr<USoundBase> TurnLoopSound;
+
+	/** Played once each time the drone jumps */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Drone|Audio")
+	TObjectPtr<USoundBase> JumpSound;
+
+	/** Seconds to fade the loops in and out. 0 = start and stop instantly. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Drone|Audio", meta = (ClampMin = "0.0", Units = "s"))
+	float LoopFadeTime = 0.15f;
+
+	/** The components that play the loops. Their attenuation can be tuned on BP_DronePlayer. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Drone|Audio")
+	TObjectPtr<UAudioComponent> MoveAudio;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Drone|Audio")
+	TObjectPtr<UAudioComponent> TurnAudio;
+
+	/** Starts or stops the loops to match what the drone is doing right now */
+	void RefreshLoopSounds();
 
 	/** Starts every pending command that is due */
 	void ProcessPending(double Now);
