@@ -16,6 +16,9 @@ struct FInputActionInstance;
 /** Fired whenever the pending letter or the queue changes, or the drone finishes. The HUD listens to this. */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnCommandBufferChanged);
 
+/** Fired when a command was lost to technical difficulties, whether it was skipped or swapped. Actual is None if skipped. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnPacketLost, EDroneCommand, Intended, EDroneCommand, Actual);
+
 /**
  *  Simple first person Player Controller
  *  Manages the input mapping context.
@@ -45,6 +48,10 @@ public:
 
 	UPROPERTY(BlueprintAssignable, Category="Drone")
 	FOnCommandBufferChanged OnBufferChanged;
+
+	/** Bind to this from the UI to show "PACKET LOST!". Fires for both skipped and swapped commands. */
+	UPROPERTY(BlueprintAssignable, Category="Drone")
+	FOnPacketLost OnPacketLost;
 
 	/** Display name for a command ("Turn Right"), for the HUD */
 	UFUNCTION(BlueprintPure, Category="Drone")
@@ -132,4 +139,8 @@ protected:
 
 	UFUNCTION()
 	void OnDroneFinished();
+
+	/** Forwards the drone's glitch event as OnPacketLost */
+	UFUNCTION()
+	void OnDroneGlitch(EDroneCommand Intended, EDroneCommand Actual);
 };

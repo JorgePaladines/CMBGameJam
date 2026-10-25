@@ -131,6 +131,7 @@ void ACMBGameJamPlayerController::OnPossess(APawn* InPawn)
 	if (Drone)
 	{
 		Drone->OnFinished.AddUniqueDynamic(this, &ACMBGameJamPlayerController::OnDroneFinished);
+		Drone->OnCommandGlitch.AddUniqueDynamic(this, &ACMBGameJamPlayerController::OnDroneGlitch);
 	}
 	else
 	{
@@ -143,6 +144,7 @@ void ACMBGameJamPlayerController::OnUnPossess()
 	if (Drone)
 	{
 		Drone->OnFinished.RemoveDynamic(this, &ACMBGameJamPlayerController::OnDroneFinished);
+		Drone->OnCommandGlitch.RemoveDynamic(this, &ACMBGameJamPlayerController::OnDroneGlitch);
 		Drone = nullptr;
 	}
 
@@ -240,4 +242,9 @@ void ACMBGameJamPlayerController::SendQueue()
 void ACMBGameJamPlayerController::OnDroneFinished()
 {
 	OnBufferChanged.Broadcast();
+}
+
+void ACMBGameJamPlayerController::OnDroneGlitch(EDroneCommand Intended, EDroneCommand Actual)
+{
+	OnPacketLost.Broadcast(Intended, Actual);
 }
